@@ -69,8 +69,8 @@ def ima_api(path, body, timeout=30):
         data = r.json()
     except ValueError:
         sys.exit(f"❌ 响应非 JSON: {r.text[:200]}")
-    if data.get("retcode", 0) != 0:
-        sys.exit(f"❌ API 错误 {data.get('retcode')}: {data.get('errmsg')}")
+    if data.get("code", 0) != 0:
+        sys.exit(f"❌ API 错误 {data.get('code')}: {data.get('msg')}")
     return data.get("data", {})
 
 
@@ -216,11 +216,13 @@ def _load_routes():
 
 
 def _route(file_path, routes):
+    fp = file_path.replace("\\", "/")
     for rule in routes.get("rules", []):
         m = rule.get("match", {})
-        if m.get("path_prefix") and file_path.startswith(m["path_prefix"]):
+        pfx = (m.get("path_prefix") or "").replace("\\", "/")
+        if pfx and fp.startswith(pfx):
             return rule["target"]
-        if m.get("file_type") and file_path.lower().endswith("." + m["file_type"]):
+        if m.get("file_type") and fp.lower().endswith("." + m["file_type"]):
             return rule["target"]
     return routes.get("default")
 
