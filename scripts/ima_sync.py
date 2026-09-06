@@ -10,6 +10,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 
@@ -18,6 +19,15 @@ try:
 except ImportError:
     sys.exit("缺少 requests，请运行: pip install requests")
 
+# 兼容 Windows GBK 控制台：强制 stdout/stderr 使用 utf-8，避免打印 emoji 时 UnicodeEncodeError 崩溃
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 IMA_BASE = "https://ima.qq.com"
 
 # 文件扩展名 -> IMA media_type 枚举（pdf=1, ppt=4, xlsx=5, 图片=3, 未知=1）
@@ -25,13 +35,16 @@ MEDIA_TYPE_MAP = {
     "pdf": 1, "doc": 1, "docx": 1, "md": 1, "txt": 1, "html": 1, "htm": 1,
     "xls": 5, "xlsx": 5,
     "ppt": 4, "pptx": 4,
-    "png": 3, "jpg": 3, "jpeg": 3, "gif": 3, "webp": 3, "svg": 3,
+    "png": 3, "jpg": 3, "jpeg": 3, "gif": 3, "webp": 3,
 }
 SUPPORTED_EXTS = set(MEDIA_TYPE_MAP.keys()) | {"bmp", "tiff"}
 UNSUPPORTED_HINT = {
     "mp4": "视频文件不支持，请用 IMA 桌面客户端",
     "mov": "视频文件不支持，请用 IMA 桌面客户端",
     "mp3": "音频文件不支持，请用 IMA 桌面客户端",
+    # 2026-07-31 实测：IMA OpenAPI 对 .svg 返回 220001 invalid media_type（矢量图不受支持）
+    # 需要入库请先转成 png/jpg 再同步
+    "svg": "SVG 矢量图不受 IMA 支持（API 报 220001），请先转 png/jpg 再同步",
 }
 
 
@@ -50,6 +63,28 @@ def load_credentials():
     return cid, key
 
 
+# 鉴权失败全局标志：一旦置位，auto-backup 立即终止，避免几十个文件排队重试
+AUTH_FAILED = {"flag": False}
+
+AUTH_HINT = """❌ IMA 凭证鉴权失败（skill auth failed / code 200002）
+这不是网络问题，也不是脚本 bug。原因是 API Key 已过期或被撤销 —— IMA Skills API Key 有效期约 1 个月。
+修复三步：
+  1) 打开 https://ima.qq.com/agent-interface 登录
+  2) 重新生成 API Key（只显示一次，立即复制）；若整套凭证重生成，client_id 也要一起换
+  3) 覆盖写入 ~/.config/ima/api_key（及 ~/.config/ima/client_id），可用环境变量 IMA_OPENAPI_CLIENTID / IMA_OPENAPI_APIKEY 覆盖
+补传：凭证更新后重跑 auto-backup，脚本按 state.json 指纹增量补传全部积压文件，无需手动重来。"""
+
+
+def _auth_fail(resp=None, data=None):
+    AUTH_FAILED["flag"] = True
+    extra = ""
+    if resp is not None:
+        extra = f"\n  HTTP {resp.status_code}"
+    if data:
+        extra += f" | code={data.get('code')} msg={data.get('msg')}"
+    sys.exit(AUTH_HINT + extra)
+
+
 def ima_api(path, body, timeout=30):
     """统一的 IMA OpenAPI POST 调用，返回 data 字典。"""
     cid, key = load_credentials()
@@ -62,15 +97,20 @@ def ima_api(path, body, timeout=30):
     }
     try:
         r = requests.post(f"{IMA_BASE}/{path}", headers=headers, json=body, timeout=timeout)
-        r.raise_for_status()
     except requests.RequestException as e:
         sys.exit(f"❌ 网络/请求失败: {e}")
+    # 鉴权失败优先识别：HTTP 401/403 或业务码 200002，不要误报成网络问题
+    if r.status_code in (401, 403):
+        _auth_fail(r)
     try:
         data = r.json()
     except ValueError:
         sys.exit(f"❌ 响应非 JSON: {r.text[:200]}")
-    if data.get("code", 0) != 0:
-        sys.exit(f"❌ API 错误 {data.get('code')}: {data.get('msg')}")
+    code = data.get("code", 0)
+    if code == 200002 or "auth failed" in str(data.get("msg", "")).lower():
+        _auth_fail(r, data)
+    if code != 0:
+        sys.exit(f"❌ API 错误 {code}: {data.get('msg')}")
     return data.get("data", {})
 
 
@@ -192,6 +232,19 @@ def _fingerprint(path):
     return f"{st.st_mtime:.0f}:{st.st_size}"
 
 
+# 中间产物排除规则：_workdir / audio / video 子目录，以及视频帧 (frame_*.png 等)
+_FRAME_RE = re.compile(r"(?i)^frame_.*\.(png|jpe?g|gif|webp|svg|bmp|tiff)$")
+def _is_excluded(path):
+    rp = path.replace("\\", "/").lower()
+    if "_workdir" in rp:
+        return True
+    if re.search(r"/(audio|video)/", rp):
+        return True
+    if _FRAME_RE.match(os.path.basename(path)):
+        return True
+    return False
+
+
 def _load_state(state_file):
     state_file = os.path.expanduser(state_file)
     if os.path.exists(state_file):
@@ -238,7 +291,7 @@ def auto_backup(watch, state_file="~/.config/ima-sync/state.json", recursive=Tru
         for n in names:
             p = os.path.join(root, n)
             ext = n.rsplit(".", 1)[-1].lower() if "." in n else ""
-            if ext in SUPPORTED_EXTS:
+            if ext in SUPPORTED_EXTS and not _is_excluded(p):
                 files.append(p)
     new = [f for f in files if state.get(os.path.relpath(f, watch)) != _fingerprint(f)]
     if not new:
@@ -265,6 +318,9 @@ def auto_backup(watch, state_file="~/.config/ima-sync/state.json", recursive=Tru
         except SystemExit as e:
             fail.append((rel, str(e)))
             print(f"  ❌ {e}")
+            if AUTH_FAILED["flag"]:
+                print("\n⛔ 凭证失效，终止本轮备份。剩余文件未处理，修复凭证后重跑即可自动补传。")
+                break
         time.sleep(1.5)
     _save_state(state_file, state)
     print(f"\n✅ 自动备份完成：成功 {len(ok)}，失败 {len(fail)}")

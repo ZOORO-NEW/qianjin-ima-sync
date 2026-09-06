@@ -4,7 +4,7 @@ displayName: IMA知识库同步
 summary: "'WorkBuddy 生成成果自动备份到腾讯 ima 知识库（基于官方 IMA OpenAPI）。支持单文件上传、整目录批量备份、文本转笔记、网页/微信文章收藏、自动增量备份、知识库与笔记搜索。智能路由按路径/类型自动选择目标知识库。..."
 name: qianjin-ima-sync
 description: "WorkBuddy 生成成果自动备份到腾讯 ima 知识库（基于官方 IMA OpenAPI）。支持单文件上传、整目录批量备份、文本转笔记、网页/微信文章收藏、自动增量备份、知识库与笔记搜索。智能路由按路径/类型自动选择目标知识库。触发词：备份到ima、上传到ima、存到ima知识库、ima同步、ima备份、归档到ima、自动备份、保存到腾讯ima、搜ima知识库、搜ima笔记。"
-version: 2.0.0
+version: 2.1.0
 category: 效率工具
 platforms: [workbuddy, claude-code, cursor, windsurf, codex]
 author: qianjin
@@ -294,7 +294,26 @@ Invoke-RestMethod -Uri $url -Method Post -Body $utf8 -ContentType "application/j
 | 100008 | 版本冲突 | 重新获取内容再操作 |
 | 100009 | 超过笔记大小限制 | 拆分多次 `append_doc` |
 | 20002 | API 限频 | 降速，加 retry（批量已内置 1-2s 间隔） |
-| 20004 | API Key 鉴权失败 | 检查 Client ID/Key 是否正确 |
+| 200002 | skill auth failed（凭证失效/过期） | **不是网络问题**：去 <https://ima.qq.com/agent-interface> 续期或重新生成 Key |
+| 220001 | 参数错误（如 media_type 不受支持） | SVG 等矢量图不受支持，先转 png/jpg |
+| 220004 | 知识库权限/不存在 | 用 `list-kb` 取编码串 ID，勿用网页 URL 里的纯数字 ID |
+
+### ⚠️ 凭证 401：IMA Skills API Key 有 30 天有效期
+
+实测结论（2026-09-06）：凭证生成满 30 天后，所有接口统一返回：
+
+```
+HTTP 401  {"code":200002,"msg":"skill auth failed"}
+```
+
+这不是网络抖动，也不是脚本 bug，是 Key 到期。处理要点：
+
+- **续期优先于重新生成**：在 <https://ima.qq.com/agent-interface> 点「续期」，client_id 与 api_key 字符串均不变，配置文件无需改动，重跑即可。
+- **重新生成**才会换字符串，届时须覆盖 `~/.config/ima/api_key`（必要时连同 client_id）。
+- 一键自检：`python scripts/ima_sync.py check`，能列出知识库即凭证有效。
+- 脚本已内置识别：HTTP 401/403 或 code 200002 会打印中文修复指引，且 `auto-backup` 立即终止，避免几十个文件排队重试。
+
+> 提示：IMA 的 MCP 连接器与 OpenAPI 凭证是两套体系，MCP 能连通不代表 OpenAPI 凭证有效。
 
 ---
 
@@ -336,6 +355,7 @@ Invoke-RestMethod -Uri $url -Method Post -Body $utf8 -ContentType "application/j
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v2.1 | 2026-09-06 | 新增凭证鉴权失败识别（HTTP 401/403 + code 200002 输出中文修复指引，不再误报为"网络/请求失败"）；`auto-backup` 遇鉴权失败 fail-fast 立即终止；补 `check` 自检说明与 30 天有效期排查指引；修正错误码 20002/20004 → 200002/220001/220004 |
 | v2.0 | 2026-07-18 | 对齐官方真实 API（ima.qq.com + ima-openapi 头 + openapi/*/v1 路径）；新增真实脚本 scripts/ima_sync.py；融合双向读写/检索；新增自动增量备份 + 智能路由 |
 | v1.0 | 2026-07-18 | 初始理念稿（API 路径有误，已废弃） |
 
