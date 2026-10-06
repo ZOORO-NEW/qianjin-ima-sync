@@ -4,7 +4,7 @@ displayName: IMA知识库同步
 summary: "'WorkBuddy 生成成果自动备份到腾讯 ima 知识库（基于官方 IMA OpenAPI）。支持单文件上传、整目录批量备份、文本转笔记、网页/微信文章收藏、自动增量备份、知识库与笔记搜索。智能路由按路径/类型自动选择目标知识库。..."
 name: qianjin-ima-sync
 description: "WorkBuddy 生成成果自动备份到腾讯 ima 知识库（基于官方 IMA OpenAPI）。支持单文件上传、整目录批量备份、文本转笔记、网页/微信文章收藏、自动增量备份、知识库与笔记搜索。智能路由按路径/类型自动选择目标知识库。触发词：备份到ima、上传到ima、存到ima知识库、ima同步、ima备份、归档到ima、自动备份、保存到腾讯ima、搜ima知识库、搜ima笔记。"
-version: 2.1.0
+version: 2.1.1
 category: 效率工具
 platforms: [workbuddy, claude-code, cursor, windsurf, codex, linux, macos, windows]
 author: qianjin
